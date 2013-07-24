@@ -1,3 +1,5 @@
+{-# LANGUAGE TypeSynonymInstances, FlexibleInstances,
+             OverloadedStrings #-}
 -- | Parses U.S. federal Thrift Savings Plan (TSP) statements.
 --
 -- This module works with PDF TSP statements downloaded from the TSP
@@ -19,6 +21,8 @@ import Data.List.Split (splitOn)
 import qualified Text.Parsec as P
 import Text.Parsec.String (Parser)
 import System.Process (readProcess)
+import qualified Text.PrettyPrint as Y
+import Data.Monoid ((<>))
 
 type Dollars = Decimal
 type Shares = Decimal
@@ -71,6 +75,18 @@ columnBreak
   = () <$ P.char ' ' <* P.char ' ' <* P.many (P.char ' ')
 
 
+class Pretty a where
+  pretty :: a -> Y.Doc
+
+instance Pretty D.Decimal where
+  pretty = Y.text . show
+
+instance Pretty String where
+  pretty = Y.text
+
+instance Pretty T.Day where
+  pretty = Y.text . show
+
 data TxnBySource = TxnBySource
   { tbsPayrollOffice :: String
   , tbsPostingDate :: T.Day
@@ -81,6 +97,21 @@ data TxnBySource = TxnBySource
   , tbsMatching :: Dollars
   , tbsTotal :: Dollars
   } deriving (Eq, Show)
+
+label :: Pretty p => String -> p -> Y.Doc
+label l p = Y.text l <> Y.text ": " <> pretty p
+
+instance Pretty TxnBySource where
+  pretty x = Y.vcat
+    [ label "Payroll office" (tbsPayrollOffice x)
+    , label "Posting date" (tbsPostingDate x)
+    , label "Transaction type" (tbsTransactionType x)
+    , label "Traditional" (tbsTraditional x)
+    , label "Roth" (tbsRoth x)
+    , label "Automatic" (tbsAutomatic x)
+    , label "Matching" (tbsMatching x)
+    , label "Total" (tbsTotal x)
+    ]
 
 txnBySource :: Parser TxnBySource
 txnBySource
@@ -112,6 +143,15 @@ data TxnsBySourceSummary = TxnsBySourceSummary
   , tbssMatching :: Dollars
   , tbssTotal :: Dollars
   } deriving (Eq, Show)
+
+instance Pretty TxnsBySourceSummary where
+  pretty x = Y.vcat
+    [ label "Traditional" (tbssTraditional x)
+    , label "Roth" (tbssRoth x)
+    , label "Automatic" (tbssAuto x)
+    , label "Matching" (tbssMatching x)
+    , label "Total" (tbssTotal x)
+    ]
 
 -- | Transactions by source beginning balance. In the TSP statement
 -- these have dollar signs; these values remove this leading dollar
@@ -164,6 +204,17 @@ data TxnByFund = TxnByFund
   , tbfNumShares :: Shares
   } deriving (Eq, Show)
 
+instance Pretty TxnByFund where
+  pretty x = Y.vcat
+    [ label "Posting date" (tbfPostingDate x)
+    , label "Transaction type" (tbfTransactionType x)
+    , label "Traditional" (tbfTraditional x)
+    , label "Roth" (tbfRoth x)
+    , label "Total" (tbfTotal x)
+    , label "Share price" (tbfSharePrice x)
+    , label "Number of shares" (tbfNumShares x)
+    ]
+
 txnByFund :: Parser TxnByFund
 txnByFund
   = TxnByFund
@@ -189,6 +240,13 @@ data ByFundBeginningBal = ByFundBeginningBal
   , bfbDollarBalance :: Dollars
   } deriving (Eq, Show)
 
+instance Pretty ByFundBeginningBal where
+  pretty x = Y.vcat
+    [ label "Share price" (bfbSharePrice x)
+    , label "Number of shares" (bfbNumShares x)
+    , label "Dollar balance" (bfbDollarBalance x)
+    ]
+
 byFundBeginningBal :: Parser ByFundBeginningBal
 byFundBeginningBal
   = ByFundBeginningBal
@@ -206,6 +264,9 @@ data ByFundGainLoss = ByFundGainLoss
   { bfgDollarBalance :: Dollars }
   deriving (Eq, Show)
 
+instance Pretty ByFundGainLoss where
+  pretty x = label "Dollar balance" (bfgDollarBalance x)
+
 byFundGainLoss :: Parser ByFundGainLoss
 byFundGainLoss
   = ByFundGainLoss
@@ -220,6 +281,13 @@ data ByFundEndingBal = ByFundEndingBal
   , bfeNumShares :: Shares
   , bfeDollarBalance :: Dollars
   } deriving (Eq, Show)
+
+instance Pretty ByFundEndingBal where
+  pretty x = Y.vcat
+    [ label "Share price" (bfeSharePrice x)
+    , label "Number of shares" (bfeNumShares x)
+    , label "Dollar balance" (bfeDollarBalance x)
+    ]
 
 byFundEndingBal :: Parser ByFundEndingBal
 byFundEndingBal
@@ -240,6 +308,22 @@ data TransactionDetailBySource = TransactionDetailBySource
   , tdbsGainLoss :: TxnsBySourceGainLoss
   , tdbsEndingBal :: TxnsBySourceEndingBal
   } deriving (Eq, Show)
+
+instance Pretty TransactionDetailBySource where
+  pretty x = Y.vcat . Y.punctuate (Y.text "\n") $
+    [ Y.hang "Beginning balance:" 2
+             (pretty . tdbsBeginningBal $ x)
+
+    , Y.hang "Transactions:" 2
+             (Y.vcat . Y.punctuate (Y.text "\n")
+                     . map pretty . tdbsTxns $ x)
+
+    , Y.hang "Gain or loss:" 2
+             (pretty . tdbsGainLoss $ x)
+
+    , Y.hang "Ending balance:" 2
+             (pretty . tdbsEndingBal $ x)
+    ]
 
 skipLine :: Parser ()
 skipLine = P.many (P.noneOf "\n") >> P.char '\n' >> return ()
@@ -292,6 +376,17 @@ data TransactionDetailOneFund = TransactionDetailOneFund
   , tdofEndingBal :: ByFundEndingBal
   } deriving (Eq, Show)
 
+instance Pretty TransactionDetailOneFund where
+  pretty x = Y.vcat
+    [ label "Fund name" (tdofFundName x)
+    , Y.hang "Beginning balance:" 2 (pretty . tdofBeginningBal $ x)
+    , Y.hang "Transactions:" 2
+             (Y.vcat . Y.punctuate "\n" . map pretty
+                     . tdofTxns $ x)
+    , Y.hang "Gain or loss:" 2 (pretty . tdofGainLoss $ x)
+    , Y.hang "Ending balance:" 2 (pretty . tdofEndingBal $ x)
+    ]
+
 txnDetailOneFund :: Parser TransactionDetailOneFund
 txnDetailOneFund = do
   name <- skipLinesThrough fundName
@@ -309,6 +404,15 @@ data TspStatement = TspStatement
   { tspDetailBySource :: TransactionDetailBySource
   , tspDetailByFund :: [TransactionDetailOneFund]
   } deriving (Eq, Show)
+
+instance Pretty TspStatement where
+  pretty x = Y.vcat
+    [ "DETAIL BY SOURCE"
+    , pretty (tspDetailBySource x)
+    , "\n"
+    , Y.vcat . Y.punctuate "\n" . map pretty
+      . tspDetailByFund $ x
+    ]
 
 parseTsp :: Parser TspStatement
 parseTsp
