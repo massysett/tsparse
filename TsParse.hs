@@ -18,6 +18,7 @@ import Data.List (isSuffixOf)
 import Data.List.Split (splitOn)
 import qualified Text.Parsec as P
 import Text.Parsec.String (Parser)
+import System.Process (readProcess)
 
 type Dollars = Decimal
 type Shares = Decimal
@@ -52,9 +53,12 @@ date = do
   w <- word
   let ws = splitOn "/" w
   case ws of
-    m:d:y:[] ->
-      T.fromGregorian <$> safeRead y
-      <*> safeRead m <*> safeRead d
+    m:d:y:[] -> do
+      maybeDy <- T.fromGregorianValid <$> safeRead y
+                 <*> safeRead m <*> safeRead d
+      case maybeDy of
+        Nothing -> fail $ "invalid date: " ++ w
+        Just dy -> return dy
     _ -> fail $ "could not parse date: " ++ w
 
 safeRead :: Read x => String -> Parser x
@@ -272,9 +276,56 @@ parseLinesThrough b e = do
 
 txnDetailBySourceSection :: Parser TransactionDetailBySource
 txnDetailBySourceSection = do
+  _ <- skipLinesThrough (P.string "YOUR TRANSACTION DETAIL BY SOURCE")
   begBal <- skipLinesThrough (txnsBySourceSummary "Beginning Balance")
   (txns, gainLoss) <- parseLinesThrough txnBySource
                       (txnsBySourceSummary "Gain or Loss This Quarter")
   endBal <- skipLinesThrough
             (txnsBySourceSummary "Ending Balance")
   return $ TransactionDetailBySource begBal txns gainLoss endBal
+
+data TransactionDetailOneFund = TransactionDetailOneFund
+  { tdofFundName :: String
+  , tdofBeginningBal :: ByFundBeginningBal
+  , tdofTxns :: [TxnByFund]
+  , tdofGainLoss :: ByFundGainLoss
+  , tdofEndingBal :: ByFundEndingBal
+  } deriving (Eq, Show)
+
+txnDetailOneFund :: Parser TransactionDetailOneFund
+txnDetailOneFund = do
+  name <- skipLinesThrough fundName
+  begBal <- skipLinesThrough byFundBeginningBal
+  (txns, gainLoss) <- parseLinesThrough txnByFund byFundGainLoss
+  endBal <- skipLinesThrough byFundEndingBal
+  return $ TransactionDetailOneFund name begBal txns gainLoss endBal
+
+txnDetailsAllFunds :: Parser [TransactionDetailOneFund]
+txnDetailsAllFunds
+  = skipLinesThrough (P.string "YOUR TRANSACTION DETAIL BY FUND")
+  *> P.many (skipLinesThrough txnDetailOneFund)
+
+data TspStatement = TspStatement
+  { tspDetailBySource :: TransactionDetailBySource
+  , tspDetailByFund :: [TransactionDetailOneFund]
+  } deriving (Eq, Show)
+
+parseTsp :: Parser TspStatement
+parseTsp
+  = TspStatement
+  <$> txnDetailBySourceSection
+  <*> txnDetailsAllFunds
+
+readTspFile :: String -> IO String
+readTspFile s = readProcess "pdftotext"
+                            ["-layout", "-enc", "ASCII7", s, "-"] ""
+
+parseTspFromFile
+  :: String
+  -- ^ Filename
+  -> IO TspStatement
+parseTspFromFile fn = do
+  s <- readTspFile fn
+  case P.parse parseTsp fn s of
+    Left e -> fail . show $ e
+    Right g -> return g
