@@ -19,6 +19,7 @@ import Control.Applicative
 import Data.List (isSuffixOf)
 import Data.List.Split (splitOn)
 import qualified Text.Parsec as P
+import Text.Parsec ((<?>))
 import Text.Parsec.String (Parser)
 import System.Process (readProcess)
 import qualified Text.PrettyPrint as Y
@@ -326,30 +327,36 @@ instance Pretty TransactionDetailBySource where
     ]
 
 skipLine :: Parser ()
-skipLine = P.many (P.noneOf "\n") >> P.char '\n' >> return ()
+skipLine
+  = P.many (P.noneOf "\n")
+  >> P.char '\n'
+  >> return ()
+  <?> "skip line"
 
--- | Runs the given parser. If it fails, skip the current line. Keeps
--- running the given parser until it succeeds.
+-- | Runs the given parser. If it fails without consuming any input,
+-- skip the current line. Keeps running the given parser until it
+-- succeeds.
 skipLinesThrough :: Parser a -> Parser a
 skipLinesThrough p = do
-  r <- optional (P.try p)
+  r <- optional p
   case r of
     Nothing -> skipLine *> skipLinesThrough p
     Just g -> return g
 
 -- | Runs the end parser. If it succeeds, returns all values parsed so
--- far and the value of the end parser. If it fails, runs the main
--- parser. If the main parser succeeds, recurses. If the main parser
--- fails, skips a line and recurses.
+-- far and the value of the end parser. If it fails without consuming
+-- any input, runs the main parser. If the main parser succeeds,
+-- recurses. If the main parser fails without consuming any input,
+-- skips a line and recurses.
 parseLinesThrough
   :: Parser body
   -> Parser end
   -> Parser ([body], end)
 parseLinesThrough b e = do
-  maybeE <- optional (P.try e)
+  maybeE <- optional e
   case maybeE of
     Nothing -> do
-      maybeB <- optional (P.try b)
+      maybeB <- optional b
       case maybeB of
         Nothing -> skipLine >> parseLinesThrough b e
         Just bdy -> do
@@ -360,12 +367,19 @@ parseLinesThrough b e = do
 
 txnDetailBySourceSection :: Parser TransactionDetailBySource
 txnDetailBySourceSection = do
-  _ <- skipLinesThrough (P.string "YOUR TRANSACTION DETAIL BY SOURCE")
-  begBal <- skipLinesThrough (txnsBySourceSummary "Beginning Balance")
-  (txns, gainLoss) <- parseLinesThrough txnBySource
-                      (txnsBySourceSummary "Gain or Loss This Quarter")
+  _ <- skipLinesThrough
+       (P.try (P.string "YOUR TRANSACTION DETAIL BY SOURCE")
+              <?> "transaction detail header line")
+  begBal <- skipLinesThrough
+            (P.try (txnsBySourceSummary "Beginning Balance")
+                   <?> "Beginning balance line")
+  (txns, gainLoss) <- parseLinesThrough
+    (P.try txnBySource <?> "transaction by source")
+    (P.try (txnsBySourceSummary "Gain or Loss This Quarter")
+           <?> "transaction by source summary")
   endBal <- skipLinesThrough
-            (txnsBySourceSummary "Ending Balance")
+    (P.try (txnsBySourceSummary "Ending Balance")
+           <?> "transactions by source summary")
   return $ TransactionDetailBySource begBal txns gainLoss endBal
 
 data TransactionDetailOneFund = TransactionDetailOneFund
@@ -389,16 +403,23 @@ instance Pretty TransactionDetailOneFund where
 
 txnDetailOneFund :: Parser TransactionDetailOneFund
 txnDetailOneFund = do
-  name <- skipLinesThrough fundName
-  begBal <- skipLinesThrough byFundBeginningBal
-  (txns, gainLoss) <- parseLinesThrough txnByFund byFundGainLoss
-  endBal <- skipLinesThrough byFundEndingBal
+  name <- skipLinesThrough (P.try fundName <?> "fund name")
+  begBal <- skipLinesThrough
+    (P.try byFundBeginningBal <?> "By fund beginning balance")
+  (txns, gainLoss) <- parseLinesThrough
+    (P.try txnByFund <?> "transaction by fund")
+    (P.try byFundGainLoss <?> "by fund gain or loss")
+  endBal <- skipLinesThrough
+    (P.try byFundEndingBal <?> "by fund ending balance")
   return $ TransactionDetailOneFund name begBal txns gainLoss endBal
 
 txnDetailsAllFunds :: Parser [TransactionDetailOneFund]
 txnDetailsAllFunds
-  = skipLinesThrough (P.string "YOUR TRANSACTION DETAIL BY FUND")
-  *> P.many (skipLinesThrough txnDetailOneFund)
+  = skipLinesThrough
+      (P.try (P.string "YOUR TRANSACTION DETAIL BY FUND")
+             <?> "transaction detail by fund header")
+  *> P.many (skipLinesThrough (P.try txnDetailOneFund
+                                     <?> "transaction details section"))
 
 data TspStatement = TspStatement
   { tspDetailBySource :: TransactionDetailBySource
