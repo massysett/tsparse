@@ -63,6 +63,7 @@ library
     , pretty ==1.1.*
 
   ghc-options: -Wall
+
   
 Flag test
   Description: Enable options for testing
@@ -79,5 +80,25 @@ Executable print-tsp
     , process ==1.1.*
     , pretty ==1.1.*
 
+  ghc-options: -Wall
   if ! flag(test)
     buildable: False
+
+Executable test-tsp
+  main-is: test-tsp.hs
+  build-depends:
+      base ==4.6.*
+    , Decimal ==0.3.*
+    , time ==1.4.*
+    , split ==0.2.*
+    , parsec ==3.1.*
+    , process ==1.1.*
+    , pretty ==1.1.*
+
+  extensions: CPP
+  ghc-options: -Wall
+  if ! flag(test)
+    buildable: False
+  else
+    cpp-options: -Dtest
+    build-depends: QuickCheck ==2.5.*

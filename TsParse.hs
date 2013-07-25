@@ -1,5 +1,5 @@
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances,
-             OverloadedStrings #-}
+             OverloadedStrings, CPP, TemplateHaskell #-}
 -- | Parses U.S. federal Thrift Savings Plan (TSP) statements.
 --
 -- This module works with PDF TSP statements downloaded from the TSP
@@ -16,41 +16,161 @@ import qualified Data.Time as T
 import Data.Decimal (Decimal)
 import Prelude hiding (words)
 import Control.Applicative
-import Data.List (isSuffixOf)
 import Data.List.Split (splitOn)
 import qualified Text.Parsec as P
+import Text.Read (readMaybe)
 import Text.Parsec ((<?>))
 import Text.Parsec.String (Parser)
 import System.Process (readProcess)
 import qualified Text.PrettyPrint as Y
 import Data.Monoid ((<>))
 
+#ifdef test
+import qualified Test.QuickCheck as Q
+import Test.QuickCheck.All (quickCheckAll)
+import Test.QuickCheck (Gen, Arbitrary(..))
+import Data.List (intersperse)
+import Data.List.Split (chunksOf)
+#endif
+
 type Dollars = Decimal
 type Shares = Decimal
+
+#ifdef test
+
+genMantissa :: Gen Integer
+genMantissa = fmap fromIntegral
+  $ Q.oneof [ Q.arbitrarySizedIntegral :: Gen Int
+            , Q.arbitrarySizedBoundedIntegral
+            ]
+
+genDollars :: Gen Dollars
+genDollars = D.Decimal <$> pure 2 <*> genMantissa
+
+genShares :: Gen Shares
+genShares = D.Decimal <$> pure 4 <*> genMantissa
+
+#endif
 
 -- | A single word in a text column.
 word :: Parser String
 word = P.many1 (P.noneOf "\n ")
 
+#ifdef test
+
+genChar :: Gen Char
+genChar = Q.choose ('\0', '\127')
+
+genNonSpacePrintable :: Gen Char
+genNonSpacePrintable = Q.choose ('!', '~')
+
+data Rendered a = Rendered
+  { ast :: a
+  , rendering :: String
+  } deriving (Eq, Show)
+
+class Renderable a where
+  render :: Gen (Rendered a)
+
+genWord :: Gen (Rendered String)
+genWord = do
+  cs <- Q.listOf1 genNonSpacePrintable
+  return $ Rendered cs cs
+
+#endif
+
 -- | Multiple words in a text column. Separated by a single space.
-words :: Parser String
-words = fmap concat $ P.sepBy1 word sep
+words :: Parser [String]
+words = P.sepBy1 word sep
   where
     sep = P.try (P.char ' ' *> P.notFollowedBy (P.char ' '))
 
+#ifdef test
+
+genWords :: Gen (Rendered [String])
+genWords = do
+  ws <- Q.listOf1 genWord
+  let withSpaces = concat . intersperse " " . map ast $ ws
+  return $ Rendered (map ast ws) withSpaces
+
+newtype WordsRen = WordsRen { unWordsRen :: Rendered [String] }
+  deriving (Eq, Show)
+
+instance Arbitrary WordsRen where
+  arbitrary = WordsRen <$> genWords
+
+prop_words :: WordsRen -> Bool
+prop_words = testRendered words . unWordsRen
+
+#endif
+
 -- | Parses a single decimal value. Recognizes negative signs. Strips
 -- out dollar signs and commas.
+--
+-- Use 'readMaybe' rather than 'reads'. The Read instance of Decimal
+-- returns an ambiguous parse; 'readMaybe' will use the parse that
+-- consumes the entire string if there is one.
 decimal :: Parser D.Decimal
 decimal = do
-  ws <- fmap (filter (not . (`elem` "$, "))) words
+  ws <- fmap (map (filter (not . (`elem` "$, ")))) words
   (isNeg, num) <- case ws of
-    "" -> fail "empty string, cannot parse decimal"
-    x:xs -> return $ if x == '-' then (True, xs) else (False, x:xs)
-  dec <- case reads num of
-    (r, ""):[] -> return r
-    _ -> fail $ "could not parse decimal: " ++ num
+    [] -> fail "empty string, cannot parse decimal"
+    x:[] -> return (False, x)
+    x:y:[] -> if x == "-"
+              then return (True, y)
+              else fail "could not parse decimal: too many words"
+    _ -> fail "could not parse decimal, too many words"
+  dec <- case readMaybe num of
+    Nothing -> fail $ "could not parse decimal: " ++ num
+    Just r -> return r
   return $ if isNeg then negate dec else dec
-  
+
+#ifdef test
+
+prop_Decimal :: DecimalRen -> Bool
+prop_Decimal = testRendered decimal . unDecimalRen
+
+newtype DecimalRen = DecimalRen { unDecimalRen :: Rendered D.Decimal }
+  deriving (Eq, Show)
+
+instance Arbitrary DecimalRen where
+  arbitrary = do
+    dec <- Q.oneof [genDollars, genShares]
+    ren <- showDecimalWithSign dec
+    return . DecimalRen . Rendered dec $ ren
+
+-- | Shows a decimal, with commas. Does not show the negative sign.
+
+showDecimalNoSign :: D.Decimal -> String
+showDecimalNoSign dec =
+  let shown = show . abs $ dec
+      (whole, frac) = case splitOn "." shown of
+        x:xs:[] -> (x, xs)
+        _ -> error "unexpected split result"
+      commaed = reverse
+              . concat
+              . intersperse ","
+              . chunksOf 3
+              . reverse
+              $ whole
+  in commaed ++ "." ++ frac
+
+-- | Show decimal, with sign. Randomly adds a dollar sign.
+showDecimalWithSign :: D.Decimal -> Gen String
+showDecimalWithSign d = fmap f arbitrary
+  where
+    f dolSign =
+      let noSign = showDecimalNoSign d
+          withDols = if dolSign then '$' : noSign else noSign
+      in if d < 0 then "- " ++ withDols else withDols
+
+testRendered :: Eq a => Parser a -> Rendered a -> Bool
+testRendered p (Rendered tgt rend) =
+  case P.parse p "" rend of
+    Left _ -> False
+    Right g -> g == tgt
+
+#endif
 
 -- | Parses a single date.
 date :: Parser T.Day
@@ -85,13 +205,16 @@ instance Pretty D.Decimal where
 instance Pretty String where
   pretty = Y.text
 
+instance Pretty [String] where
+  pretty = Y.hsep . map Y.text
+
 instance Pretty T.Day where
   pretty = Y.text . show
 
 data TxnBySource = TxnBySource
   { tbsPayrollOffice :: String
   , tbsPostingDate :: T.Day
-  , tbsTransactionType :: String
+  , tbsTransactionType :: [String]
   , tbsTraditional :: Dollars
   , tbsRoth :: Dollars
   , tbsAutomatic :: Dollars
@@ -187,17 +310,17 @@ txnsBySourceSummary s
 -- Transaction detail by fund
 --
 
-fundName :: Parser String
+fundName :: Parser [String]
 fundName = do
   _ <- P.many (P.char ' ')
   ws <- words
-  if "Fund" `isSuffixOf` ws
+  if last ws == "Fund"
     then P.char '\n' *> return ws
     else fail "not a fund name"
 
 data TxnByFund = TxnByFund
   { tbfPostingDate :: T.Day
-  , tbfTransactionType :: String
+  , tbfTransactionType :: [String]
   , tbfTraditional :: Dollars
   , tbfRoth :: Dollars
   , tbfTotal :: Dollars
@@ -383,7 +506,7 @@ txnDetailBySourceSection = do
   return $ TransactionDetailBySource begBal txns gainLoss endBal
 
 data TransactionDetailOneFund = TransactionDetailOneFund
-  { tdofFundName :: String
+  { tdofFundName :: [String]
   , tdofBeginningBal :: ByFundBeginningBal
   , tdofTxns :: [TxnByFund]
   , tdofGainLoss :: ByFundGainLoss
@@ -454,3 +577,8 @@ parseTspFromFile fn = do
   case P.parse parseTsp fn s of
     Left e -> fail . show $ e
     Right g -> return g
+
+#ifdef test
+runAllTests :: IO Bool
+runAllTests = $quickCheckAll
+#endif
