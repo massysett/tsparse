@@ -27,6 +27,7 @@ import Data.Monoid ((<>))
 
 #ifdef test
 import qualified Test.QuickCheck as Q
+import qualified Test.QuickCheck.Property as QP
 import Test.QuickCheck.All (quickCheckAll)
 import Test.QuickCheck (Gen, Arbitrary(..))
 import Data.List (intersperse)
@@ -47,8 +48,26 @@ genMantissa = fmap fromIntegral
 genDollars :: Gen Dollars
 genDollars = D.Decimal <$> pure 2 <*> genMantissa
 
+newtype DollarsRen = DollarsRen { unDollarsRen :: Rendered Dollars }
+  deriving (Eq, Show)
+
+instance Arbitrary DollarsRen where
+  arbitrary = do
+    dec <- genDollars
+    ren <- showDecimalWithSign dec
+    return . DollarsRen $ Rendered dec ren
+
 genShares :: Gen Shares
 genShares = D.Decimal <$> pure 4 <*> genMantissa
+
+newtype SharesRen = SharesRen { unSharesRen :: Rendered Dollars }
+  deriving (Eq, Show)
+
+instance Arbitrary SharesRen where
+  arbitrary = do
+    dec <- genShares
+    ren <- showDecimalWithSign dec
+    return . SharesRen $ Rendered dec ren
 
 #endif
 
@@ -69,8 +88,6 @@ data Rendered a = Rendered
   , rendering :: String
   } deriving (Eq, Show)
 
-class Renderable a where
-  render :: Gen (Rendered a)
 
 genWord :: Gen (Rendered String)
 genWord = do
@@ -99,7 +116,7 @@ newtype WordsRen = WordsRen { unWordsRen :: Rendered [String] }
 instance Arbitrary WordsRen where
   arbitrary = WordsRen <$> genWords
 
-prop_words :: WordsRen -> Bool
+prop_words :: WordsRen -> QP.Result
 prop_words = testRendered words . unWordsRen
 
 #endif
@@ -127,7 +144,7 @@ decimal = do
 
 #ifdef test
 
-prop_Decimal :: DecimalRen -> Bool
+prop_Decimal :: DecimalRen -> QP.Result
 prop_Decimal = testRendered decimal . unDecimalRen
 
 newtype DecimalRen = DecimalRen { unDecimalRen :: Rendered D.Decimal }
@@ -164,11 +181,20 @@ showDecimalWithSign d = fmap f arbitrary
           withDols = if dolSign then '$' : noSign else noSign
       in if d < 0 then "- " ++ withDols else withDols
 
-testRendered :: Eq a => Parser a -> Rendered a -> Bool
+testRendered :: (Eq a, Show a) => Parser a -> Rendered a -> QP.Result
 testRendered p (Rendered tgt rend) =
   case P.parse p "" rend of
-    Left _ -> False
-    Right g -> g == tgt
+    Left e -> QP.failed { QP.reason = "parse failed: " ++ show e
+                          ++ "target: " ++ show tgt
+                          ++ "rendered: " ++ rend }
+    Right g ->
+      if g == tgt
+      then QP.succeeded
+      else QP.failed { QP.reason = "parsed not equal to original. "
+                       ++ "original: " ++ show tgt
+                       ++ " parsed: " ++ show g
+                       ++ " rendered: " ++ rend }
+
 
 #endif
 
@@ -186,9 +212,37 @@ date = do
         Just dy -> return dy
     _ -> fail $ "could not parse date: " ++ w
 
+#ifdef test
+
+render2digits :: Int -> String
+render2digits i = case show i of
+  c:[] -> '0':c:[]
+  c -> c
+
+newtype DayRen = DayRen { unDayRen :: Rendered T.Day }
+  deriving (Eq, Show)
+
+instance Arbitrary DayRen where
+  arbitrary =
+    let lower = fromEnum $ T.fromGregorian 1900 1 1
+        upper = fromEnum $ T.fromGregorian 2100 12 31
+        f dtNum =
+          let dt = toEnum dtNum
+              (yr, mo, da) = T.toGregorian dt
+              dtStr = render2digits mo ++ "/"
+                      ++ render2digits da ++ "/"
+                      ++ show yr
+          in DayRen $ Rendered dt dtStr
+    in fmap f $ Q.choose (lower, upper)
+
+prop_day :: DayRen -> QP.Result
+prop_day = testRendered date . unDayRen
+
+#endif
+
 safeRead :: Read x => String -> Parser x
-safeRead s = case reads s of
-  (x, ""):[] -> return x
+safeRead s = case readMaybe s of
+  Just x -> return x
   _ -> fail $ "could not read string: " ++ s
 
 columnBreak :: Parser ()
@@ -221,6 +275,51 @@ data TxnBySource = TxnBySource
   , tbsMatching :: Dollars
   , tbsTotal :: Dollars
   } deriving (Eq, Show)
+
+#ifdef test
+
+newtype RenTxnBySource = RenTxnBySource
+  { unRenTxnBySource :: Rendered TxnBySource }
+  deriving (Eq, Show)
+
+
+instance Arbitrary RenTxnBySource where
+  arbitrary = do
+    rPayroll <- genWord
+    rPostingDate <- fmap unDayRen arbitrary
+    rTxnType <- genWords
+    rTrad <- fmap unDollarsRen arbitrary
+    rRoth <- fmap unDollarsRen arbitrary
+    rAuto <- fmap unDollarsRen arbitrary
+    rMatch <- fmap unDollarsRen arbitrary
+    rTot <- fmap unDollarsRen arbitrary
+    let rAst = TxnBySource (ast rPayroll) (ast rPostingDate)
+          (ast rTxnType) (ast rTrad) (ast rRoth) (ast rAuto)
+          (ast rMatch) (ast rTot)
+    ren <- columns [ rendering rPayroll, rendering rPostingDate,
+                     rendering rTxnType,
+                     rendering rTrad,
+                     rendering rRoth, rendering rAuto,
+                     rendering rMatch, rendering rTot ]
+    leader <- fmap (flip replicate ' ') Q.arbitrarySizedIntegral
+    return . RenTxnBySource $ Rendered rAst (leader ++ ren ++ "\n")
+
+prop_txnBySource :: RenTxnBySource -> QP.Result
+prop_txnBySource = testRendered txnBySource . unRenTxnBySource
+
+genInterleaved :: Gen a -> [a] -> Gen [a]
+genInterleaved g = sequence . intersperse g . map return
+
+columnSpacer :: Gen String
+columnSpacer = fmap (f . abs) Q.arbitrarySizedIntegral
+  where
+    f i = "  " ++ replicate i ' '
+
+columns :: [String] -> Gen String
+columns = fmap concat . genInterleaved columnSpacer
+
+
+#endif
 
 label :: Pretty p => String -> p -> Y.Doc
 label l p = Y.text l <> Y.text ": " <> pretty p
@@ -267,6 +366,25 @@ data TxnsBySourceSummary = TxnsBySourceSummary
   , tbssMatching :: Dollars
   , tbssTotal :: Dollars
   } deriving (Eq, Show)
+
+#ifdef test
+
+newtype RenTxnsBySourceSummary = RenTxnsBySourceSummary
+  { unRenTxnsBySourceSummary :: Rendered TxnsBySourceSummary }
+  deriving (Eq, Show)
+
+instance Arbitrary RenTxnsBySourceSummary where
+  arbitrary = do
+    rTrad <- fmap unDollarsRen arbitrary
+    rRoth <- fmap unDollarsRen arbitrary
+    rAuto <- fmap unDollarsRen arbitrary
+    rMatch <- fmap unDollarsRen arbitrary
+    rTot <- fmap unDollarsRen arbitrary
+    leader <- fmap (flip replicate ' ') Q.arbitrarySizedIntegral
+    let 
+
+
+#endif
 
 instance Pretty TxnsBySourceSummary where
   pretty x = Y.vcat
