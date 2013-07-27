@@ -15,6 +15,7 @@ import qualified Data.Decimal as D
 import qualified Data.Time as T
 import Data.Decimal (Decimal)
 import Prelude hiding (words)
+import qualified Prelude
 import Control.Applicative
 import Data.List.Split (splitOn)
 import qualified Text.Parsec as P
@@ -71,9 +72,14 @@ instance Arbitrary SharesRen where
 
 #endif
 
+isNonSpaceNonControl :: Char -> Bool
+isNonSpaceNonControl c = c >= '!' && c <= '~'
+
 -- | A single word in a text column.
 word :: Parser String
-word = P.many1 (P.noneOf "\n ")
+word = P.many1
+  (P.satisfy isNonSpaceNonControl
+    <?> "non-space, non-control character")
 
 #ifdef test
 
@@ -278,7 +284,7 @@ data TxnBySource = TxnBySource
 
 #ifdef test
 
-newtype RenTxnBySource = RenTxnBySource
+data RenTxnBySource = RenTxnBySource
   { unRenTxnBySource :: Rendered TxnBySource }
   deriving (Eq, Show)
 
@@ -369,20 +375,32 @@ data TxnsBySourceSummary = TxnsBySourceSummary
 
 #ifdef test
 
-newtype RenTxnsBySourceSummary = RenTxnsBySourceSummary
-  { unRenTxnsBySourceSummary :: Rendered TxnsBySourceSummary }
-  deriving (Eq, Show)
+genTxnsBySourceSummary
+  :: [String]
+  -- ^ Description. This is a list of words. It should not contain any
+  -- spaces.
+  -> Gen (Rendered TxnsBySourceSummary)
+genTxnsBySourceSummary desc = do
+  rTrad <- fmap unDollarsRen arbitrary
+  rRoth <- fmap unDollarsRen arbitrary
+  rAuto <- fmap unDollarsRen arbitrary
+  rMatch <- fmap unDollarsRen arbitrary
+  rTot <- fmap unDollarsRen arbitrary
+  leader <- fmap (flip replicate ' ') Q.arbitrarySizedIntegral
+  let rAst = TxnsBySourceSummary (ast rTrad) (ast rRoth) (ast rAuto)
+        (ast rMatch) (ast rTot)
+  ren <- columns [ concat . intersperse " " $ desc,
+                   rendering rTrad, rendering rRoth,
+                   rendering rAuto, rendering rMatch,
+                   rendering rTot ]
+  return $ Rendered rAst (leader ++ ren ++ "\n")
 
-instance Arbitrary RenTxnsBySourceSummary where
-  arbitrary = do
-    rTrad <- fmap unDollarsRen arbitrary
-    rRoth <- fmap unDollarsRen arbitrary
-    rAuto <- fmap unDollarsRen arbitrary
-    rMatch <- fmap unDollarsRen arbitrary
-    rTot <- fmap unDollarsRen arbitrary
-    leader <- fmap (flip replicate ' ') Q.arbitrarySizedIntegral
-    let 
-
+prop_txnsBySourceSummary :: WordsRen -> QP.Property
+prop_txnsBySourceSummary wr = do
+  let ws = ast . unWordsRen $ wr
+      wordsStr = concat . intersperse " " $ ws
+  QP.forAll (genTxnsBySourceSummary ws)
+    (testRendered (txnsBySourceSummary wordsStr))
 
 #endif
 
@@ -436,6 +454,24 @@ fundName = do
     then P.char '\n' *> return ws
     else fail "not a fund name"
 
+#ifdef test
+
+newtype FundNameRen = FundNameRen
+  { unFundNameRen :: Rendered [String] }
+  deriving (Eq, Show)
+
+instance Arbitrary FundNameRen where
+  arbitrary = do
+    ws <- fmap unWordsRen arbitrary
+    let ws' = ws { ast = ast ws ++ ["Fund"] }
+        ws'' = ws' { rendering = rendering ws ++ " Fund\n" }
+    return $ FundNameRen ws''
+
+prop_fundName :: FundNameRen -> QP.Result
+prop_fundName = testRendered fundName . unFundNameRen
+
+#endif
+
 data TxnByFund = TxnByFund
   { tbfPostingDate :: T.Day
   , tbfTransactionType :: [String]
@@ -445,6 +481,31 @@ data TxnByFund = TxnByFund
   , tbfSharePrice :: Dollars
   , tbfNumShares :: Shares
   } deriving (Eq, Show)
+
+#ifdef test
+
+genTxnByFund :: Gen (Rendered TxnByFund)
+genTxnByFund = do
+  rdy <- fmap unDayRen arbitrary
+  rty <- genWords
+  rtrad <- fmap unDollarsRen arbitrary
+  rroth <- fmap unDollarsRen arbitrary
+  rtot <- fmap unDollarsRen arbitrary
+  rpri <- fmap unDollarsRen arbitrary
+  rsha <- fmap unDollarsRen arbitrary
+  leader <- fmap (flip replicate ' ') Q.arbitrarySizedIntegral
+  let rAst = TxnByFund (ast rdy) (ast rty) (ast rtrad) (ast rroth)
+                       (ast rtot) (ast rpri) (ast rsha)
+  ren <- columns [ rendering rdy,
+                   rendering rty,
+                   rendering rtrad, rendering rroth,
+                   rendering rtot, rendering rpri, rendering rsha ]
+  return $ Rendered rAst (leader ++ ren ++ "\n")
+
+prop_txnByFund :: QP.Property
+prop_txnByFund = QP.forAll genTxnByFund $ testRendered txnByFund
+
+#endif
 
 instance Pretty TxnByFund where
   pretty x = Y.vcat
@@ -482,6 +543,25 @@ data ByFundBeginningBal = ByFundBeginningBal
   , bfbDollarBalance :: Dollars
   } deriving (Eq, Show)
 
+#ifdef test
+
+genByFundBeginningBal :: Gen (Rendered ByFundBeginningBal)
+genByFundBeginningBal = do
+  rpr <- fmap unDollarsRen arbitrary
+  rsha <- fmap unSharesRen arbitrary
+  rbal <- fmap unDollarsRen arbitrary
+  leader <- fmap (flip replicate ' ') Q.arbitrarySizedIntegral
+  let rAst = ByFundBeginningBal (ast rpr) (ast rsha) (ast rbal)
+  ren <- columns [ "Beginning Balance",
+                   rendering rpr, rendering rsha, rendering rbal ]
+  return $ Rendered rAst (leader ++ ren ++ "\n")
+
+prop_byFundBeginningBal :: QP.Property
+prop_byFundBeginningBal = QP.forAll genByFundBeginningBal
+  $ testRendered byFundBeginningBal
+
+#endif
+
 instance Pretty ByFundBeginningBal where
   pretty x = Y.vcat
     [ label "Share price" (bfbSharePrice x)
@@ -506,6 +586,22 @@ data ByFundGainLoss = ByFundGainLoss
   { bfgDollarBalance :: Dollars }
   deriving (Eq, Show)
 
+#ifdef test
+
+genByFundGainLoss :: Gen (Rendered ByFundGainLoss)
+genByFundGainLoss = do
+  rbal <- fmap unDollarsRen arbitrary
+  leader <- fmap (flip replicate ' ') Q.arbitrarySizedIntegral
+  let rAst = ByFundGainLoss (ast rbal)
+  ren <- columns [ "Gain or Loss This Quarter", rendering rbal ]
+  return $ Rendered rAst (leader ++ ren ++ "\n")
+
+prop_byFundGainLoss :: QP.Property
+prop_byFundGainLoss = QP.forAll genByFundGainLoss
+  $ testRendered byFundGainLoss
+
+#endif
+
 instance Pretty ByFundGainLoss where
   pretty x = label "Dollar balance" (bfgDollarBalance x)
 
@@ -523,6 +619,25 @@ data ByFundEndingBal = ByFundEndingBal
   , bfeNumShares :: Shares
   , bfeDollarBalance :: Dollars
   } deriving (Eq, Show)
+
+#ifdef test
+
+genByFundEndingBal :: Gen (Rendered ByFundEndingBal)
+genByFundEndingBal = do
+  rpr <- fmap unDollarsRen arbitrary
+  rsha <- fmap unSharesRen arbitrary
+  rbal <- fmap unDollarsRen arbitrary
+  leader <- fmap (flip replicate ' ') Q.arbitrarySizedIntegral
+  let rAst = ByFundEndingBal (ast rpr) (ast rsha) (ast rbal)
+  ren <- columns [ "Ending Balance",
+                   rendering rpr, rendering rsha, rendering rbal ]
+  return $ Rendered rAst (leader ++ ren ++ "\n")
+
+prop_byFundEndingBal :: QP.Property
+prop_byFundEndingBal = QP.forAll genByFundEndingBal
+  $ testRendered byFundEndingBal
+
+#endif
 
 instance Pretty ByFundEndingBal where
   pretty x = Y.vcat
@@ -551,6 +666,66 @@ data TransactionDetailBySource = TransactionDetailBySource
   , tdbsEndingBal :: TxnsBySourceEndingBal
   } deriving (Eq, Show)
 
+#ifdef test
+
+maxSize :: Int -> Gen a -> Gen a
+maxSize i g = Q.sized (\s -> Q.resize (min s i) g)
+
+vectorMaxOf :: Int -> Gen a -> Gen [a]
+vectorMaxOf i g = Q.sized $ \s -> do
+  let maxLen = min s i
+  len <- Q.choose (0, maxLen)
+  Q.vectorOf len g
+
+vectorMaxOf1 :: Int -> Gen a -> Gen [a]
+vectorMaxOf1 i g = Q.sized $ \s -> do
+  let maxLen = min s i
+  len <- Q.choose (1, (max 1 maxLen))
+  Q.vectorOf len g
+
+-- | Generates a garbage line, which should be discarded. Some of
+-- these are lines with only a form feed (ASCII 0x0C) as pdftotext
+-- generates some of these.
+genGarbageLine :: Gen String
+genGarbageLine = Q.oneof
+  [ fmap (++ "\n")
+    $ maxSize 30 (Q.listOf
+        (genChar `Q.suchThat` (not . (`elem` "\n\x0C"))))
+  , return "\x0C"
+  ]
+
+
+addJunkLines :: [String] -> Gen [String]
+addJunkLines ls = do
+  firstLines <- maxSize 3 (Q.listOf genGarbageLine)
+  restLines <- genInterleaved genGarbageLine ls
+  return $ firstLines ++ restLines
+
+
+genTransactionDetailsBySource :: Gen (Rendered TransactionDetailBySource)
+genTransactionDetailsBySource = do
+  rBeginningBal <- genTxnsBySourceSummary
+    (Prelude.words "Beginning Balance")
+  rTxnList <- Q.listOf arbitrary
+  let rTxns = map unRenTxnBySource rTxnList
+  rGainLoss <- genTxnsBySourceSummary
+    (Prelude.words "Gain or Loss This Quarter")
+  rEndingBal <- genTxnsBySourceSummary
+    (Prelude.words "Ending Balance")
+  let hdr = "YOUR TRANSACTION DETAIL BY SOURCE\n"
+      renLines = hdr : rendering rBeginningBal : map rendering rTxns
+                 ++ [rendering rGainLoss, rendering rEndingBal]
+  renWithJunk <- addJunkLines renLines
+  let rAst = TransactionDetailBySource (ast rBeginningBal)
+              (map ast rTxns) (ast rGainLoss) (ast rEndingBal)
+  return $ Rendered rAst (concat renWithJunk)
+
+prop_transactionDetailsBySource :: QP.Property
+prop_transactionDetailsBySource = QP.forAll genTransactionDetailsBySource
+  $ testRendered txnDetailBySourceSection
+
+#endif
+
 instance Pretty TransactionDetailBySource where
   pretty x = Y.vcat . Y.punctuate (Y.text "\n") $
     [ Y.hang "Beginning balance:" 2
@@ -569,14 +744,23 @@ instance Pretty TransactionDetailBySource where
 
 skipLine :: Parser ()
 skipLine
-  = P.many (P.noneOf "\n")
-  >> P.char '\n'
+  = P.many (P.noneOf "\n\x0C")
+  >> (P.char '\n' <|> P.char '\x0C')
   >> return ()
   <?> "skip line"
 
 -- | Runs the given parser. If it fails without consuming any input,
 -- skip the current line. Keeps running the given parser until it
 -- succeeds.
+--
+-- Do not wrap this parser in the Parsec many or many1 parsers or the
+-- like; it probably will not do what you expect. When it gets to end
+-- of file, it will consume the remaining junk lines, and then fail
+-- after consuming input. This will cause many to fail while consuming
+-- input, and it will not return the items that skipLinesThrough has
+-- parsed so far.  You can wrap skipLinesThrough in 'try', but
+-- remember that then the trailing last junk lines will not be parsed
+-- (which might be what you want anyway.)
 skipLinesThrough :: Parser a -> Parser a
 skipLinesThrough p = do
   r <- optional p
@@ -631,6 +815,29 @@ data TransactionDetailOneFund = TransactionDetailOneFund
   , tdofEndingBal :: ByFundEndingBal
   } deriving (Eq, Show)
 
+#ifdef test
+
+genTransactionDetailOneFund :: Gen (Rendered TransactionDetailOneFund)
+genTransactionDetailOneFund = do
+  rFund <- fmap unFundNameRen arbitrary
+  rBeg <- genByFundBeginningBal
+  rTxns <- Q.listOf genTxnByFund
+  rGain <- genByFundGainLoss
+  rEnd <- genByFundEndingBal
+  let rAst = TransactionDetailOneFund (ast rFund) (ast rBeg)
+             (map ast rTxns) (ast rGain) (ast rEnd)
+      renLines = rendering rFund : rendering rBeg
+                 : map rendering rTxns
+                 ++ [ rendering rGain, rendering rEnd]
+  renWithJunk <- addJunkLines renLines
+  return $ Rendered rAst (concat renWithJunk)
+
+prop_transactionDetailOneFund :: QP.Property
+prop_transactionDetailOneFund = QP.forAll genTransactionDetailOneFund
+  $ testRendered txnDetailOneFund
+
+#endif
+
 instance Pretty TransactionDetailOneFund where
   pretty x = Y.vcat
     [ label "Fund name" (tdofFundName x)
@@ -654,13 +861,65 @@ txnDetailOneFund = do
     (P.try byFundEndingBal <?> "by fund ending balance")
   return $ TransactionDetailOneFund name begBal txns gainLoss endBal
 
+#ifdef test
+
+genTxnDetailsAllFunds :: Gen (Rendered [TransactionDetailOneFund])
+genTxnDetailsAllFunds = do
+  rFunds <- vectorMaxOf1 5 genTransactionDetailOneFund
+  let hdr = "YOUR TRANSACTION DETAIL BY FUND\n"
+      renLines = hdr : map rendering rFunds
+      rAst = map ast rFunds
+  withJunk <- addJunkLines renLines
+  return $ Rendered rAst (concat withJunk)
+
+prop_txnDetailsAllFunds :: QP.Property
+prop_txnDetailsAllFunds = QP.forAll genTxnDetailsAllFunds
+  $ testRendered txnDetailsAllFunds
+
+#endif
+
+{-
+-- | Runs the given parser. If it fails without consuming any input,
+-- see if we are at end of file. If yes, returns items found so
+-- far. If no, skips this line and tries again on the next line.
+parseInterleaveSkipThroughEof :: Parser a -> Parser [a]
+parseInterleaveSkipThroughEof p = do
+  r <- optional p
+  case r of
+    Nothing -> do
+      atEof <- optional P.eof
+      case atEof of
+        Just _ -> return []
+        Nothing -> skipLine *> parseInterleaveSkip p
+    Just g -> do
+      rs <- parseInterleaveSkip p
+      return $ g : rs
+-}
 txnDetailsAllFunds :: Parser [TransactionDetailOneFund]
 txnDetailsAllFunds
   = skipLinesThrough
       (P.try (P.string "YOUR TRANSACTION DETAIL BY FUND")
              <?> "transaction detail by fund header")
-  *> P.many (skipLinesThrough (P.try txnDetailOneFund
-                                     <?> "transaction details section"))
+  *> P.many (P.try (skipLinesThrough (P.try txnDetailOneFund
+                                     <?> "transaction details section")))
+
+#ifdef test
+
+genTspStatement :: Gen (Rendered TspStatement)
+genTspStatement = do
+  rBySource <- genTransactionDetailsBySource
+  rByFund <- genTxnDetailsAllFunds
+  let rAst = TspStatement (ast rBySource) (ast rByFund)
+      renLines = [rendering rBySource, rendering rByFund]
+  withJunk <- addJunkLines renLines
+  moreJunk <- vectorMaxOf 3 genGarbageLine
+  return $ Rendered rAst ((concat withJunk) ++ concat moreJunk)
+
+prop_parseTsp :: QP.Property
+prop_parseTsp = QP.forAll genTspStatement
+  $ testRendered parseTsp
+
+#endif
 
 data TspStatement = TspStatement
   { tspDetailBySource :: TransactionDetailBySource

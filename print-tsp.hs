@@ -8,4 +8,4 @@ main :: IO ()
 main = do
   x:[] <- getArgs
   stmt <- T.parseTspFromFile x
-  putStr . render . T.pretty $ stmt
+  putStrLn . render . T.pretty $ stmt
