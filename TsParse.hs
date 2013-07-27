@@ -4,12 +4,56 @@
 --
 -- This module works with PDF TSP statements downloaded from the TSP
 -- web site. It works with the statement format used as of July 2013.
--- The format recently changed to allow for Roth contributions.
+-- The format recently changed to allow for Roth contributions.  This
+-- works on civilian, FERS statements; maybe it works on others, but I
+-- cannot test these (if you test these and find bugs, send me patches
+-- and I will merge them.)
 --
 -- You need to have the pdftotext program installed and available on
 -- your PATH.  This program is part of the poppler project.  On Debian
 -- GNU/Linux systems, it is part of the poppler-utils package.
-module TsParse where
+module TsParse
+
+-- If in test mode, just export everything.
+#ifdef test
+
+  where
+
+#else
+
+  ( -- * Data types
+
+    -- ** Basic types
+    Dollars
+  , Shares
+
+    -- ** Transaction Detail By Source
+  , BySource(..)
+  , BySourceSummary(..)
+  , BySourceBeginningBal
+  , BySourceGainLoss
+  , BySourceEndingBal
+  , BySourcePosting(..)
+
+    -- ** Transaction Detail By Fund
+  , ByFund(..)
+  , ByFundBeginningBal(..)
+  , ByFundGainLoss(..)
+  , ByFundEndingBal(..)
+  , ByFundPosting(..)
+
+    -- ** TSP statement
+  , TspStatement(..)
+
+    -- * Parsing a TSP statement
+  , parseTspFromFile
+
+    -- * Pretty printing
+  , Pretty(..)
+
+  ) where
+#endif
+
 
 import qualified Data.Decimal as D
 import qualified Data.Time as T
@@ -35,7 +79,10 @@ import Data.List (intersperse)
 import Data.List.Split (chunksOf)
 #endif
 
+-- | Any data type that is Dollars on the TSP statement.
 type Dollars = Decimal
+
+-- | Any data type that is a number of shares on the TSP statement.
 type Shares = Decimal
 
 #ifdef test
@@ -271,21 +318,21 @@ instance Pretty [String] where
 instance Pretty T.Day where
   pretty = Y.text . show
 
-data TxnBySource = TxnBySource
-  { tbsPayrollOffice :: String
-  , tbsPostingDate :: T.Day
-  , tbsTransactionType :: [String]
-  , tbsTraditional :: Dollars
-  , tbsRoth :: Dollars
-  , tbsAutomatic :: Dollars
-  , tbsMatching :: Dollars
-  , tbsTotal :: Dollars
+data BySourcePosting = BySourcePosting
+  { bspPayrollOffice :: String
+  , bspPostingDate :: T.Day
+  , bspTxnType :: [String]
+  , bspTraditional :: Dollars
+  , bspRoth :: Dollars
+  , bspAutomatic :: Dollars
+  , bspMatching :: Dollars
+  , bspTotal :: Dollars
   } deriving (Eq, Show)
 
 #ifdef test
 
 data RenTxnBySource = RenTxnBySource
-  { unRenTxnBySource :: Rendered TxnBySource }
+  { unRenTxnBySource :: Rendered BySourcePosting }
   deriving (Eq, Show)
 
 
@@ -299,7 +346,7 @@ instance Arbitrary RenTxnBySource where
     rAuto <- fmap unDollarsRen arbitrary
     rMatch <- fmap unDollarsRen arbitrary
     rTot <- fmap unDollarsRen arbitrary
-    let rAst = TxnBySource (ast rPayroll) (ast rPostingDate)
+    let rAst = BySourcePosting (ast rPayroll) (ast rPostingDate)
           (ast rTxnType) (ast rTrad) (ast rRoth) (ast rAuto)
           (ast rMatch) (ast rTot)
     ren <- columns [ rendering rPayroll, rendering rPostingDate,
@@ -330,21 +377,21 @@ columns = fmap concat . genInterleaved columnSpacer
 label :: Pretty p => String -> p -> Y.Doc
 label l p = Y.text l <> Y.text ": " <> pretty p
 
-instance Pretty TxnBySource where
+instance Pretty BySourcePosting where
   pretty x = Y.vcat
-    [ label "Payroll office" (tbsPayrollOffice x)
-    , label "Posting date" (tbsPostingDate x)
-    , label "Transaction type" (tbsTransactionType x)
-    , label "Traditional" (tbsTraditional x)
-    , label "Roth" (tbsRoth x)
-    , label "Automatic" (tbsAutomatic x)
-    , label "Matching" (tbsMatching x)
-    , label "Total" (tbsTotal x)
+    [ label "Payroll office" (bspPayrollOffice x)
+    , label "Posting date" (bspPostingDate x)
+    , label "Transaction type" (bspTxnType x)
+    , label "Traditional" (bspTraditional x)
+    , label "Roth" (bspRoth x)
+    , label "Automatic" (bspAutomatic x)
+    , label "Matching" (bspMatching x)
+    , label "Total" (bspTotal x)
     ]
 
-txnBySource :: Parser TxnBySource
+txnBySource :: Parser BySourcePosting
 txnBySource
-  = TxnBySource
+  = BySourcePosting
   <$ P.many (P.char ' ')
   <*> word                              -- payroll office
   <* columnBreak
@@ -363,31 +410,36 @@ txnBySource
   <*> decimal                             -- total (can be negative)
   <* P.char '\n'
 
--- | Summary data in the TxnsBySource. Can be either a Gain or Loss or
--- a Beginning Balance or an EndingBalance.
-data TxnsBySourceSummary = TxnsBySourceSummary
-  { tbssTraditional :: Dollars
-  , tbssRoth :: Dollars
-  , tbssAuto :: Dollars
-  , tbssMatching :: Dollars
-  , tbssTotal :: Dollars
+-- | The TSP statement has several lines in the @YOUR TRANSACTION
+-- DETAIL BY SOURCE@ section that contain summary data: @Beginning
+-- Balance@, @Gain or Loss This Quarter@, and @Ending Balance@. Since
+-- the columns in these lines are all the same they are all
+-- represented by this single type. Type synonyms
+-- 'BySourceBeginningBal', 'BySourceGainLoss', and
+-- 'BySourceEndingBal' are used as appropriate.
+data BySourceSummary = BySourceSummary
+  { bssTraditional :: Dollars
+  , bssRoth :: Dollars
+  , bssAuto :: Dollars
+  , bssMatching :: Dollars
+  , bssTotal :: Dollars
   } deriving (Eq, Show)
 
 #ifdef test
 
-genTxnsBySourceSummary
+genTxnBySourceSummary
   :: [String]
   -- ^ Description. This is a list of words. It should not contain any
   -- spaces.
-  -> Gen (Rendered TxnsBySourceSummary)
-genTxnsBySourceSummary desc = do
+  -> Gen (Rendered BySourceSummary)
+genTxnBySourceSummary desc = do
   rTrad <- fmap unDollarsRen arbitrary
   rRoth <- fmap unDollarsRen arbitrary
   rAuto <- fmap unDollarsRen arbitrary
   rMatch <- fmap unDollarsRen arbitrary
   rTot <- fmap unDollarsRen arbitrary
   leader <- fmap (flip replicate ' ') Q.arbitrarySizedIntegral
-  let rAst = TxnsBySourceSummary (ast rTrad) (ast rRoth) (ast rAuto)
+  let rAst = BySourceSummary (ast rTrad) (ast rRoth) (ast rAuto)
         (ast rMatch) (ast rTot)
   ren <- columns [ concat . intersperse " " $ desc,
                    rendering rTrad, rendering rRoth,
@@ -399,35 +451,33 @@ prop_txnsBySourceSummary :: WordsRen -> QP.Property
 prop_txnsBySourceSummary wr = do
   let ws = ast . unWordsRen $ wr
       wordsStr = concat . intersperse " " $ ws
-  QP.forAll (genTxnsBySourceSummary ws)
+  QP.forAll (genTxnBySourceSummary ws)
     (testRendered (txnsBySourceSummary wordsStr))
 
 #endif
 
-instance Pretty TxnsBySourceSummary where
+instance Pretty BySourceSummary where
   pretty x = Y.vcat
-    [ label "Traditional" (tbssTraditional x)
-    , label "Roth" (tbssRoth x)
-    , label "Automatic" (tbssAuto x)
-    , label "Matching" (tbssMatching x)
-    , label "Total" (tbssTotal x)
+    [ label "Traditional" (bssTraditional x)
+    , label "Roth" (bssRoth x)
+    , label "Automatic" (bssAuto x)
+    , label "Matching" (bssMatching x)
+    , label "Total" (bssTotal x)
     ]
 
--- | Transactions by source beginning balance. In the TSP statement
--- these have dollar signs; these values remove this leading dollar
--- sign.
-type TxnsBySourceBeginningBal = TxnsBySourceSummary
+-- | @YOUR TRANSACTION DETAIL BY SOURCE@ Beginning Balance.
+type BySourceBeginningBal = BySourceSummary
 
--- | Transactions by source gain or loss.
-type TxnsBySourceGainLoss = TxnsBySourceSummary
+-- | @YOUR TRANSACTION DETAIL BY SOURCE@ Gain or Loss This Quarter.
+type BySourceGainLoss = BySourceSummary
 
--- | Transactions by source ending balance.
-type TxnsBySourceEndingBal = TxnsBySourceSummary
+-- | @YOUR TRANSACTION DETAIL BY SOURCE@ Ending Balance.
+type BySourceEndingBal = BySourceSummary
 
 
-txnsBySourceSummary :: String -> Parser TxnsBySourceSummary
+txnsBySourceSummary :: String -> Parser BySourceSummary
 txnsBySourceSummary s
-  = TxnsBySourceSummary
+  = BySourceSummary
   <$ P.many (P.char ' ')
   <* P.string s              -- Description
   <* columnBreak
@@ -472,19 +522,20 @@ prop_fundName = testRendered fundName . unFundNameRen
 
 #endif
 
-data TxnByFund = TxnByFund
-  { tbfPostingDate :: T.Day
-  , tbfTransactionType :: [String]
-  , tbfTraditional :: Dollars
-  , tbfRoth :: Dollars
-  , tbfTotal :: Dollars
-  , tbfSharePrice :: Dollars
-  , tbfNumShares :: Shares
+-- | A single posting in the @YOUR TRANSACTION DETAIL BY FUND@ section.
+data ByFundPosting = ByFundPosting
+  { bfpPostingDate :: T.Day
+  , bfpTxnType :: [String]
+  , bfpTraditional :: Dollars
+  , bfpRoth :: Dollars
+  , bfpTotal :: Dollars
+  , bfpSharePrice :: Dollars
+  , bfpNumShares :: Shares
   } deriving (Eq, Show)
 
 #ifdef test
 
-genTxnByFund :: Gen (Rendered TxnByFund)
+genTxnByFund :: Gen (Rendered ByFundPosting)
 genTxnByFund = do
   rdy <- fmap unDayRen arbitrary
   rty <- genWords
@@ -494,7 +545,7 @@ genTxnByFund = do
   rpri <- fmap unDollarsRen arbitrary
   rsha <- fmap unDollarsRen arbitrary
   leader <- fmap (flip replicate ' ') Q.arbitrarySizedIntegral
-  let rAst = TxnByFund (ast rdy) (ast rty) (ast rtrad) (ast rroth)
+  let rAst = ByFundPosting (ast rdy) (ast rty) (ast rtrad) (ast rroth)
                        (ast rtot) (ast rpri) (ast rsha)
   ren <- columns [ rendering rdy,
                    rendering rty,
@@ -507,20 +558,20 @@ prop_txnByFund = QP.forAll genTxnByFund $ testRendered txnByFund
 
 #endif
 
-instance Pretty TxnByFund where
+instance Pretty ByFundPosting where
   pretty x = Y.vcat
-    [ label "Posting date" (tbfPostingDate x)
-    , label "Transaction type" (tbfTransactionType x)
-    , label "Traditional" (tbfTraditional x)
-    , label "Roth" (tbfRoth x)
-    , label "Total" (tbfTotal x)
-    , label "Share price" (tbfSharePrice x)
-    , label "Number of shares" (tbfNumShares x)
+    [ label "Posting date" (bfpPostingDate x)
+    , label "Transaction type" (bfpTxnType x)
+    , label "Traditional" (bfpTraditional x)
+    , label "Roth" (bfpRoth x)
+    , label "Total" (bfpTotal x)
+    , label "Share price" (bfpSharePrice x)
+    , label "Number of shares" (bfpNumShares x)
     ]
 
-txnByFund :: Parser TxnByFund
+txnByFund :: Parser ByFundPosting
 txnByFund
-  = TxnByFund
+  = ByFundPosting
   <$ P.many (P.char ' ')
   <*> date                    -- Posting date
   <* columnBreak
@@ -537,10 +588,12 @@ txnByFund
   <*> decimal                   -- Number of shares
   <* P.char '\n'
 
+-- | The beginning balance in a @YOUR TRANSACTION DETAIL BY FUND@
+-- section.
 data ByFundBeginningBal = ByFundBeginningBal
-  { bfbSharePrice :: Dollars
-  , bfbNumShares :: Shares
-  , bfbDollarBalance :: Dollars
+  { bfbbSharePrice :: Dollars
+  , bfbbNumShares :: Shares
+  , bfbbDollarBalance :: Dollars
   } deriving (Eq, Show)
 
 #ifdef test
@@ -564,9 +617,9 @@ prop_byFundBeginningBal = QP.forAll genByFundBeginningBal
 
 instance Pretty ByFundBeginningBal where
   pretty x = Y.vcat
-    [ label "Share price" (bfbSharePrice x)
-    , label "Number of shares" (bfbNumShares x)
-    , label "Dollar balance" (bfbDollarBalance x)
+    [ label "Share price" (bfbbSharePrice x)
+    , label "Number of shares" (bfbbNumShares x)
+    , label "Dollar balance" (bfbbDollarBalance x)
     ]
 
 byFundBeginningBal :: Parser ByFundBeginningBal
@@ -582,8 +635,10 @@ byFundBeginningBal
   <*> decimal                   -- Dollar Balance
   <* P.char '\n'
 
+-- | Gain or Loss This Quarter in the @YOUR TRANSACTION DETAIL BY
+-- FUND@ section.
 data ByFundGainLoss = ByFundGainLoss
-  { bfgDollarBalance :: Dollars }
+  { bfglDollarBalance :: Dollars }
   deriving (Eq, Show)
 
 #ifdef test
@@ -603,7 +658,7 @@ prop_byFundGainLoss = QP.forAll genByFundGainLoss
 #endif
 
 instance Pretty ByFundGainLoss where
-  pretty x = label "Dollar balance" (bfgDollarBalance x)
+  pretty x = label "Dollar balance" (bfglDollarBalance x)
 
 byFundGainLoss :: Parser ByFundGainLoss
 byFundGainLoss
@@ -614,10 +669,11 @@ byFundGainLoss
   <*> decimal
   <* P.char '\n'
 
+-- | Ending balance in the @YOUR TRANSACTION DETAIL BY FUND@ section.
 data ByFundEndingBal = ByFundEndingBal
-  { bfeSharePrice :: Dollars
-  , bfeNumShares :: Shares
-  , bfeDollarBalance :: Dollars
+  { bfebSharePrice :: Dollars
+  , bfebNumShares :: Shares
+  , bfebDollarBalance :: Dollars
   } deriving (Eq, Show)
 
 #ifdef test
@@ -641,9 +697,9 @@ prop_byFundEndingBal = QP.forAll genByFundEndingBal
 
 instance Pretty ByFundEndingBal where
   pretty x = Y.vcat
-    [ label "Share price" (bfeSharePrice x)
-    , label "Number of shares" (bfeNumShares x)
-    , label "Dollar balance" (bfeDollarBalance x)
+    [ label "Share price" (bfebSharePrice x)
+    , label "Number of shares" (bfebNumShares x)
+    , label "Dollar balance" (bfebDollarBalance x)
     ]
 
 byFundEndingBal :: Parser ByFundEndingBal
@@ -659,11 +715,12 @@ byFundEndingBal
   <*> decimal                   -- Dollar balance
   <* P.char '\n'  
 
-data TransactionDetailBySource = TransactionDetailBySource
-  { tdbsBeginningBal :: TxnsBySourceBeginningBal
-  , tdbsTxns :: [TxnBySource]
-  , tdbsGainLoss :: TxnsBySourceGainLoss
-  , tdbsEndingBal :: TxnsBySourceEndingBal
+-- | Represents the entire @YOUR TRANSACTION DETAIL BY SOURCE@ section.
+data BySource = BySource
+  { bsBeginningBal :: BySourceBeginningBal
+  , bsTxns :: [BySourcePosting]
+  , bsGainLoss :: BySourceGainLoss
+  , bsEndingBal :: BySourceEndingBal
   } deriving (Eq, Show)
 
 #ifdef test
@@ -702,44 +759,44 @@ addJunkLines ls = do
   return $ firstLines ++ restLines
 
 
-genTransactionDetailsBySource :: Gen (Rendered TransactionDetailBySource)
-genTransactionDetailsBySource = do
-  rBeginningBal <- genTxnsBySourceSummary
+genTxnDetailsBySource :: Gen (Rendered BySource)
+genTxnDetailsBySource = do
+  rBeginningBal <- genTxnBySourceSummary
     (Prelude.words "Beginning Balance")
   rTxnList <- Q.listOf arbitrary
   let rTxns = map unRenTxnBySource rTxnList
-  rGainLoss <- genTxnsBySourceSummary
+  rGainLoss <- genTxnBySourceSummary
     (Prelude.words "Gain or Loss This Quarter")
-  rEndingBal <- genTxnsBySourceSummary
+  rEndingBal <- genTxnBySourceSummary
     (Prelude.words "Ending Balance")
   let hdr = "YOUR TRANSACTION DETAIL BY SOURCE\n"
       renLines = hdr : rendering rBeginningBal : map rendering rTxns
                  ++ [rendering rGainLoss, rendering rEndingBal]
   renWithJunk <- addJunkLines renLines
-  let rAst = TransactionDetailBySource (ast rBeginningBal)
+  let rAst = BySource (ast rBeginningBal)
               (map ast rTxns) (ast rGainLoss) (ast rEndingBal)
   return $ Rendered rAst (concat renWithJunk)
 
 prop_transactionDetailsBySource :: QP.Property
-prop_transactionDetailsBySource = QP.forAll genTransactionDetailsBySource
+prop_transactionDetailsBySource = QP.forAll genTxnDetailsBySource
   $ testRendered txnDetailBySourceSection
 
 #endif
 
-instance Pretty TransactionDetailBySource where
+instance Pretty BySource where
   pretty x = Y.vcat . Y.punctuate (Y.text "\n") $
     [ Y.hang "Beginning balance:" 2
-             (pretty . tdbsBeginningBal $ x)
+             (pretty . bsBeginningBal $ x)
 
     , Y.hang "Transactions:" 2
              (Y.vcat . Y.punctuate (Y.text "\n")
-                     . map pretty . tdbsTxns $ x)
+                     . map pretty . bsTxns $ x)
 
     , Y.hang "Gain or loss:" 2
-             (pretty . tdbsGainLoss $ x)
+             (pretty . bsGainLoss $ x)
 
     , Y.hang "Ending balance:" 2
-             (pretty . tdbsEndingBal $ x)
+             (pretty . bsEndingBal $ x)
     ]
 
 skipLine :: Parser ()
@@ -790,7 +847,7 @@ parseLinesThrough b e = do
     Just end -> return ([], end)
           
 
-txnDetailBySourceSection :: Parser TransactionDetailBySource
+txnDetailBySourceSection :: Parser BySource
 txnDetailBySourceSection = do
   _ <- skipLinesThrough
        (P.try (P.string "YOUR TRANSACTION DETAIL BY SOURCE")
@@ -805,26 +862,28 @@ txnDetailBySourceSection = do
   endBal <- skipLinesThrough
     (P.try (txnsBySourceSummary "Ending Balance")
            <?> "transactions by source summary")
-  return $ TransactionDetailBySource begBal txns gainLoss endBal
+  return $ BySource begBal txns gainLoss endBal
 
-data TransactionDetailOneFund = TransactionDetailOneFund
-  { tdofFundName :: [String]
-  , tdofBeginningBal :: ByFundBeginningBal
-  , tdofTxns :: [TxnByFund]
-  , tdofGainLoss :: ByFundGainLoss
-  , tdofEndingBal :: ByFundEndingBal
+-- | A single fund in the @YOUR TRANSACTION DETAIL BY FUND@ section
+-- (e.g. the @G Fund@, @L 2040 Fund@, etc.)
+data ByFund = ByFund
+  { bfFundName :: [String]
+  , bfBeginningBal :: ByFundBeginningBal
+  , bfPostings :: [ByFundPosting]
+  , bfGainLoss :: ByFundGainLoss
+  , bfEndingBal :: ByFundEndingBal
   } deriving (Eq, Show)
 
 #ifdef test
 
-genTransactionDetailOneFund :: Gen (Rendered TransactionDetailOneFund)
-genTransactionDetailOneFund = do
+genTxnDetailOneFund :: Gen (Rendered ByFund)
+genTxnDetailOneFund = do
   rFund <- fmap unFundNameRen arbitrary
   rBeg <- genByFundBeginningBal
   rTxns <- Q.listOf genTxnByFund
   rGain <- genByFundGainLoss
   rEnd <- genByFundEndingBal
-  let rAst = TransactionDetailOneFund (ast rFund) (ast rBeg)
+  let rAst = ByFund (ast rFund) (ast rBeg)
              (map ast rTxns) (ast rGain) (ast rEnd)
       renLines = rendering rFund : rendering rBeg
                  : map rendering rTxns
@@ -833,23 +892,23 @@ genTransactionDetailOneFund = do
   return $ Rendered rAst (concat renWithJunk)
 
 prop_transactionDetailOneFund :: QP.Property
-prop_transactionDetailOneFund = QP.forAll genTransactionDetailOneFund
+prop_transactionDetailOneFund = QP.forAll genTxnDetailOneFund
   $ testRendered txnDetailOneFund
 
 #endif
 
-instance Pretty TransactionDetailOneFund where
+instance Pretty ByFund where
   pretty x = Y.vcat
-    [ label "Fund name" (tdofFundName x)
-    , Y.hang "Beginning balance:" 2 (pretty . tdofBeginningBal $ x)
+    [ label "Fund name" (bfFundName x)
+    , Y.hang "Beginning balance:" 2 (pretty . bfBeginningBal $ x)
     , Y.hang "Transactions:" 2
              (Y.vcat . Y.punctuate "\n" . map pretty
-                     . tdofTxns $ x)
-    , Y.hang "Gain or loss:" 2 (pretty . tdofGainLoss $ x)
-    , Y.hang "Ending balance:" 2 (pretty . tdofEndingBal $ x)
+                     . bfPostings $ x)
+    , Y.hang "Gain or loss:" 2 (pretty . bfGainLoss $ x)
+    , Y.hang "Ending balance:" 2 (pretty . bfEndingBal $ x)
     ]
 
-txnDetailOneFund :: Parser TransactionDetailOneFund
+txnDetailOneFund :: Parser ByFund
 txnDetailOneFund = do
   name <- skipLinesThrough (P.try fundName <?> "fund name")
   begBal <- skipLinesThrough
@@ -859,13 +918,13 @@ txnDetailOneFund = do
     (P.try byFundGainLoss <?> "by fund gain or loss")
   endBal <- skipLinesThrough
     (P.try byFundEndingBal <?> "by fund ending balance")
-  return $ TransactionDetailOneFund name begBal txns gainLoss endBal
+  return $ ByFund name begBal txns gainLoss endBal
 
 #ifdef test
 
-genTxnDetailsAllFunds :: Gen (Rendered [TransactionDetailOneFund])
+genTxnDetailsAllFunds :: Gen (Rendered [ByFund])
 genTxnDetailsAllFunds = do
-  rFunds <- vectorMaxOf1 5 genTransactionDetailOneFund
+  rFunds <- vectorMaxOf1 5 genTxnDetailOneFund
   let hdr = "YOUR TRANSACTION DETAIL BY FUND\n"
       renLines = hdr : map rendering rFunds
       rAst = map ast rFunds
@@ -878,24 +937,7 @@ prop_txnDetailsAllFunds = QP.forAll genTxnDetailsAllFunds
 
 #endif
 
-{-
--- | Runs the given parser. If it fails without consuming any input,
--- see if we are at end of file. If yes, returns items found so
--- far. If no, skips this line and tries again on the next line.
-parseInterleaveSkipThroughEof :: Parser a -> Parser [a]
-parseInterleaveSkipThroughEof p = do
-  r <- optional p
-  case r of
-    Nothing -> do
-      atEof <- optional P.eof
-      case atEof of
-        Just _ -> return []
-        Nothing -> skipLine *> parseInterleaveSkip p
-    Just g -> do
-      rs <- parseInterleaveSkip p
-      return $ g : rs
--}
-txnDetailsAllFunds :: Parser [TransactionDetailOneFund]
+txnDetailsAllFunds :: Parser [ByFund]
 txnDetailsAllFunds
   = skipLinesThrough
       (P.try (P.string "YOUR TRANSACTION DETAIL BY FUND")
@@ -907,7 +949,7 @@ txnDetailsAllFunds
 
 genTspStatement :: Gen (Rendered TspStatement)
 genTspStatement = do
-  rBySource <- genTransactionDetailsBySource
+  rBySource <- genTxnDetailsBySource
   rByFund <- genTxnDetailsAllFunds
   let rAst = TspStatement (ast rBySource) (ast rByFund)
       renLines = [rendering rBySource, rendering rByFund]
@@ -921,9 +963,22 @@ prop_parseTsp = QP.forAll genTspStatement
 
 #endif
 
+-- | All data that is parsed from the TSP statement is in this
+-- type. The parser does not attempt to parse any of the data that is
+-- on Page 1 of the PDF; most of this data all appears elsewhere on
+-- the statement and can be calculated using the data that is in this
+-- type (and besides, the data on Page 1 is in a multi-column format
+-- that would be difficult to parse; since the data is all elsewhere,
+-- it's not worth the effort.) One exception is the investment
+-- allocation for future contributions, which does not appear
+-- elsewhere.
+--
+-- In addition, the statement contains a quarterly account summary.
+-- This also is not parsed because it can be derived from all the data
+-- that is elsewhere on the statement.
 data TspStatement = TspStatement
-  { tspDetailBySource :: TransactionDetailBySource
-  , tspDetailByFund :: [TransactionDetailOneFund]
+  { tspDetailBySource :: BySource
+  , tspDetailByFund :: [ByFund]
   } deriving (Eq, Show)
 
 instance Pretty TspStatement where
@@ -945,6 +1000,12 @@ readTspFile :: String -> IO String
 readTspFile s = readProcess "pdftotext"
                             ["-layout", "-enc", "ASCII7", s, "-"] ""
 
+
+-- | Parses a TSP statement from a file.  This is the only way to
+-- parse a TSP statement (that is, there is no pure function to do it)
+-- because this function relies upon the @pdftotext@ program.  This
+-- program must exist somewhere in your PATH.  This library was tested
+-- against pdftotext version 0.18.4, which came with Debian Wheezy.
 parseTspFromFile
   :: String
   -- ^ Filename
