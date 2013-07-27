@@ -1,0 +1,4 @@
+This library parses U.S. federal Thrift Savings Plan (TSP)
+statements.
+
+More information is in the Haddock comments and in the .cabal file.
