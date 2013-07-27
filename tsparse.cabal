@@ -113,6 +113,21 @@ Executable parse-tsp-pdf
   if ! flag(test)
     buildable: False
 
+Executable parse-tsp-text
+  main-is: parse-tsp-text.hs
+  build-depends:
+      base ==4.6.*
+    , Decimal ==0.3.*
+    , time ==1.4.*
+    , split ==0.2.*
+    , parsec ==3.1.*
+    , process ==1.1.*
+    , pretty ==1.1.*
+
+  ghc-options: -Wall
+  if ! flag(test)
+    buildable: False
+
 Executable test-tsp
   main-is: test-tsp.hs
   build-depends:

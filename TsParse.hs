@@ -46,6 +46,7 @@ module TsParse
   , TspStatement(..)
 
     -- * Parsing a TSP statement
+  , parseTsp
   , parseTspFromFile
 
     -- * Pretty printing
@@ -990,6 +991,9 @@ instance Pretty TspStatement where
       . tspDetailByFund $ x
     ]
 
+-- | Parses a plain text TSP statement.  The input must be generated
+-- by the pdftotext program.  This library was tested against
+-- pdftotext version 0.18.4, which came with Debian Wheezy.
 parseTsp :: Parser TspStatement
 parseTsp
   = TspStatement
@@ -1001,11 +1005,10 @@ readTspFile s = readProcess "pdftotext"
                             ["-layout", "-enc", "ASCII7", s, "-"] ""
 
 
--- | Parses a TSP statement from a file.  This is the only way to
--- parse a TSP statement (that is, there is no pure function to do it)
--- because this function relies upon the @pdftotext@ program.  This
--- program must exist somewhere in your PATH.  This library was tested
--- against pdftotext version 0.18.4, which came with Debian Wheezy.
+-- | Parses a TSP statement from a file.  This function relies upon
+-- the @pdftotext@ program.  This program must exist somewhere in your
+-- PATH.  This library was tested against pdftotext version 0.18.4,
+-- which came with Debian Wheezy.
 parseTspFromFile
   :: String
   -- ^ Filename
