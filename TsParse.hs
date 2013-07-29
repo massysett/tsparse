@@ -26,6 +26,7 @@ module TsParse
     -- ** Basic types
     Dollars
   , Shares
+  , TxnType
 
     -- ** Transaction Detail By Source
   , BySource(..)
@@ -98,7 +99,7 @@ genDollars :: Gen Dollars
 genDollars = D.Decimal <$> pure 2 <*> genMantissa
 
 newtype DollarsRen = DollarsRen { unDollarsRen :: Rendered Dollars }
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 instance Arbitrary DollarsRen where
   arbitrary = do
@@ -110,7 +111,7 @@ genShares :: Gen Shares
 genShares = D.Decimal <$> pure 4 <*> genMantissa
 
 newtype SharesRen = SharesRen { unSharesRen :: Rendered Dollars }
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 instance Arbitrary SharesRen where
   arbitrary = do
@@ -140,7 +141,7 @@ genNonSpacePrintable = Q.choose ('!', '~')
 data Rendered a = Rendered
   { ast :: a
   , rendering :: String
-  } deriving (Eq, Show)
+  } deriving (Eq, Ord, Show)
 
 
 genWord :: Gen (Rendered String)
@@ -165,7 +166,7 @@ genWords = do
   return $ Rendered (map ast ws) withSpaces
 
 newtype WordsRen = WordsRen { unWordsRen :: Rendered [String] }
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 instance Arbitrary WordsRen where
   arbitrary = WordsRen <$> genWords
@@ -202,7 +203,7 @@ prop_Decimal :: DecimalRen -> QP.Result
 prop_Decimal = testRendered decimal . unDecimalRen
 
 newtype DecimalRen = DecimalRen { unDecimalRen :: Rendered D.Decimal }
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 instance Arbitrary DecimalRen where
   arbitrary = do
@@ -274,7 +275,7 @@ render2digits i = case show i of
   c -> c
 
 newtype DayRen = DayRen { unDayRen :: Rendered T.Day }
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 instance Arbitrary DayRen where
   arbitrary =
@@ -319,22 +320,26 @@ instance Pretty [String] where
 instance Pretty T.Day where
   pretty = Y.text . show
 
+-- | A list of words that indicates the transaction type.  Each string
+-- in this list will not have any spaces in it.
+type TxnType = [String]
+
 data BySourcePosting = BySourcePosting
   { bspPayrollOffice :: String
   , bspPostingDate :: T.Day
-  , bspTxnType :: [String]
+  , bspTxnType :: TxnType
   , bspTraditional :: Dollars
   , bspRoth :: Dollars
   , bspAutomatic :: Dollars
   , bspMatching :: Dollars
   , bspTotal :: Dollars
-  } deriving (Eq, Show)
+  } deriving (Eq, Ord, Show)
 
 #ifdef test
 
 data RenTxnBySource = RenTxnBySource
   { unRenTxnBySource :: Rendered BySourcePosting }
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 
 instance Arbitrary RenTxnBySource where
@@ -424,7 +429,7 @@ data BySourceSummary = BySourceSummary
   , bssAuto :: Dollars
   , bssMatching :: Dollars
   , bssTotal :: Dollars
-  } deriving (Eq, Show)
+  } deriving (Eq, Ord, Show)
 
 #ifdef test
 
@@ -509,7 +514,7 @@ fundName = do
 
 newtype FundNameRen = FundNameRen
   { unFundNameRen :: Rendered [String] }
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 instance Arbitrary FundNameRen where
   arbitrary = do
@@ -532,7 +537,7 @@ data ByFundPosting = ByFundPosting
   , bfpTotal :: Dollars
   , bfpSharePrice :: Dollars
   , bfpNumShares :: Shares
-  } deriving (Eq, Show)
+  } deriving (Eq, Ord, Show)
 
 #ifdef test
 
@@ -595,7 +600,7 @@ data ByFundBeginningBal = ByFundBeginningBal
   { bfbbSharePrice :: Dollars
   , bfbbNumShares :: Shares
   , bfbbDollarBalance :: Dollars
-  } deriving (Eq, Show)
+  } deriving (Eq, Ord, Show)
 
 #ifdef test
 
@@ -640,7 +645,7 @@ byFundBeginningBal
 -- FUND@ section.
 data ByFundGainLoss = ByFundGainLoss
   { bfglDollarBalance :: Dollars }
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 #ifdef test
 
@@ -675,7 +680,7 @@ data ByFundEndingBal = ByFundEndingBal
   { bfebSharePrice :: Dollars
   , bfebNumShares :: Shares
   , bfebDollarBalance :: Dollars
-  } deriving (Eq, Show)
+  } deriving (Eq, Ord, Show)
 
 #ifdef test
 
@@ -722,7 +727,7 @@ data BySource = BySource
   , bsTxns :: [BySourcePosting]
   , bsGainLoss :: BySourceGainLoss
   , bsEndingBal :: BySourceEndingBal
-  } deriving (Eq, Show)
+  } deriving (Eq, Ord, Show)
 
 #ifdef test
 
@@ -873,7 +878,7 @@ data ByFund = ByFund
   , bfPostings :: [ByFundPosting]
   , bfGainLoss :: ByFundGainLoss
   , bfEndingBal :: ByFundEndingBal
-  } deriving (Eq, Show)
+  } deriving (Eq, Ord, Show)
 
 #ifdef test
 
@@ -980,7 +985,7 @@ prop_parseTsp = QP.forAll genTspStatement
 data TspStatement = TspStatement
   { tspDetailBySource :: BySource
   , tspDetailByFund :: [ByFund]
-  } deriving (Eq, Show)
+  } deriving (Eq, Ord, Show)
 
 instance Pretty TspStatement where
   pretty x = Y.vcat
