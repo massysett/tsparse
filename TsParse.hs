@@ -37,6 +37,7 @@ module TsParse
   , BySourcePosting(..)
 
     -- ** Transaction Detail By Fund
+  , FundName
   , ByFund(..)
   , ByFundBeginningBal(..)
   , ByFundGainLoss(..)
@@ -870,10 +871,14 @@ txnDetailBySourceSection = do
            <?> "transactions by source summary")
   return $ BySource begBal txns gainLoss endBal
 
+-- | The name of a fund, eg @C Fund@. This is a list of words; each
+-- word will not contain any spaces.
+type FundName = [String]
+
 -- | A single fund in the @YOUR TRANSACTION DETAIL BY FUND@ section
 -- (e.g. the @G Fund@, @L 2040 Fund@, etc.)
 data ByFund = ByFund
-  { bfFundName :: [String]
+  { bfFundName :: FundName
   , bfBeginningBal :: ByFundBeginningBal
   , bfPostings :: [ByFundPosting]
   , bfGainLoss :: ByFundGainLoss
