@@ -177,6 +177,16 @@ prop_words = testRendered words . unWordsRen
 
 #endif
 
+dollarSign :: Parser ()
+dollarSign = () <$ optional (P.char '$')
+
+space :: Parser ()
+space = () <$ optional (P.char ' ')
+
+digits :: Parser String
+digits = fmap (filter (/= ',')) (P.many1 (P.oneOf "0123456789,"))
+         <?> "digits"
+
 -- | Parses a single decimal value. Recognizes negative signs. Strips
 -- out dollar signs and commas.
 --
@@ -185,16 +195,18 @@ prop_words = testRendered words . unWordsRen
 -- consumes the entire string if there is one.
 decimal :: Parser D.Decimal
 decimal = do
-  ws <- fmap (map (filter (not . (`elem` "$, ")))) words
-  (isNeg, num) <- case ws of
-    [] -> fail "empty string, cannot parse decimal"
-    x:[] -> return (False, x)
-    x:y:[] -> if x == "-"
-              then return (True, y)
-              else fail "could not parse decimal: too many words"
-    _ -> fail "could not parse decimal, too many words"
-  dec <- case readMaybe num of
-    Nothing -> fail $ "could not parse decimal: " ++ num
+  dollarSign
+  maybeNeg <- optional (P.char '-')
+  let isNeg = maybe False (const True) maybeNeg
+  dollarSign
+  space
+  dollarSign
+  whole <- digits
+  _ <- P.char '.'
+  frac <- digits
+  let numStr = whole ++ "." ++ frac
+  dec <- case readMaybe (whole ++ "." ++ frac) of
+    Nothing -> fail $ "could not parse decimal: " ++ numStr
     Just r -> return r
   return $ if isNeg then negate dec else dec
 
@@ -302,8 +314,7 @@ safeRead s = case readMaybe s of
   _ -> fail $ "could not read string: " ++ s
 
 columnBreak :: Parser ()
-columnBreak
-  = () <$ P.char ' ' <* P.char ' ' <* P.many (P.char ' ')
+columnBreak = () <$ P.many (P.char ' ')
 
 
 class Pretty a where
@@ -338,6 +349,7 @@ data BySourcePosting = BySourcePosting
 
 #ifdef test
 
+
 data RenTxnBySource = RenTxnBySource
   { unRenTxnBySource :: Rendered BySourcePosting }
   deriving (Eq, Ord, Show)
@@ -356,11 +368,16 @@ instance Arbitrary RenTxnBySource where
     let rAst = BySourcePosting (ast rPayroll) (ast rPostingDate)
           (ast rTxnType) (ast rTrad) (ast rRoth) (ast rAuto)
           (ast rMatch) (ast rTot)
-    ren <- columns [ rendering rPayroll, rendering rPostingDate,
-                     rendering rTxnType,
-                     rendering rTrad,
-                     rendering rRoth, rendering rAuto,
-                     rendering rMatch, rendering rTot ]
+        clmns = [ return $ rendering rPayroll       , columnSpaceOne
+                , return $ rendering rPostingDate   , columnSpaceOne
+                , return $ rendering rTxnType       , columnSpaceTwo
+                , return $ rendering rTrad          , columnSpaceOne
+                , return $ rendering rRoth          , columnSpaceOne
+                , return $ rendering rAuto          , columnSpaceOne
+                , return $ rendering rMatch         , columnSpaceOne
+                , return $ rendering rTot
+                ]
+    ren <- fmap concat . sequence $ clmns
     leader <- fmap (flip replicate ' ') Q.arbitrarySizedIntegral
     return . RenTxnBySource $ Rendered rAst (leader ++ ren ++ "\n")
 
@@ -370,13 +387,20 @@ prop_txnBySource = testRendered txnBySource . unRenTxnBySource
 genInterleaved :: Gen a -> [a] -> Gen [a]
 genInterleaved g = sequence . intersperse g . map return
 
-columnSpacer :: Gen String
-columnSpacer = fmap (f . abs) Q.arbitrarySizedIntegral
+-- | Generates at least two spaces.
+columnSpaceTwo :: Gen String
+columnSpaceTwo = fmap (f . abs) Q.arbitrarySizedIntegral
   where
     f i = "  " ++ replicate i ' '
 
+-- | Generates at least one space.
+columnSpaceOne :: Gen String
+columnSpaceOne = fmap (f . abs) Q.arbitrarySizedIntegral
+  where
+    f i = " " ++ replicate i ' '
+
 columns :: [String] -> Gen String
-columns = fmap concat . genInterleaved columnSpacer
+columns = fmap concat . genInterleaved columnSpaceTwo
 
 
 #endif
@@ -554,10 +578,15 @@ genTxnByFund = do
   leader <- fmap (flip replicate ' ') Q.arbitrarySizedIntegral
   let rAst = ByFundPosting (ast rdy) (ast rty) (ast rtrad) (ast rroth)
                        (ast rtot) (ast rpri) (ast rsha)
-  ren <- columns [ rendering rdy,
-                   rendering rty,
-                   rendering rtrad, rendering rroth,
-                   rendering rtot, rendering rpri, rendering rsha ]
+  let clmns = [ return $ rendering rdy            , columnSpaceOne
+              , return $ rendering rty            , columnSpaceTwo
+              , return $ rendering rtrad          , columnSpaceOne
+              , return $ rendering rroth          , columnSpaceOne
+              , return $ rendering rtot           , columnSpaceOne
+              , return $ rendering rpri           , columnSpaceOne
+              , return $ rendering rsha
+              ]
+  ren <- fmap concat . sequence $ clmns
   return $ Rendered rAst (leader ++ ren ++ "\n")
 
 prop_txnByFund :: QP.Property
